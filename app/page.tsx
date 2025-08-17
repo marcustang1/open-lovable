@@ -2578,43 +2578,554 @@ Focus on the key sections and content, making it clean and modern.`;
                         const existingFileIndex = updatedState.files.findIndex(f => f.path === filePath);
                         
                         if (existingFileIndex >= 0) {
-import Header from '@/components/site/Header';
-import HeroSection from '@/components/site/HeroSection';
-import Benefits from '@/components/site/Benefits';
-import Features from '@/components/site/Features';
-import Testimonials from '@/components/site/Testimonials';
-import Pricing from '@/components/site/Pricing';
-import Footer from '@/components/site/Footer';
+                          // Update existing file and mark as edited
+                          updatedState.files = [
+                            ...updatedState.files.slice(0, existingFileIndex),
+                            {
+                              ...updatedState.files[existingFileIndex],
+                              content: fileContent.trim(),
+                              type: fileType,
+                              completed: true,
+                              edited: true
+                            },
+                            ...updatedState.files.slice(existingFileIndex + 1)
+                          ];
+                        } else {
+                          // Add new file
+                          updatedState.files = [...updatedState.files, {
+                            path: filePath,
+                            content: fileContent.trim(),
+                            type: fileType,
+                            completed: true,
+                            edited: false
+                          }];
+                        }
+                        
+                        // Only show file status if not in edit mode
+                        if (!prev.isEdit) {
+                          updatedState.status = `Completed ${filePath}`;
+                        }
+                        processedFiles.add(filePath);
+                      }
+                    }
+                    
+                    // Check for current file being generated (incomplete file at the end)
+                    const lastFileMatch = newStreamedCode.match(/<file path="([^"]+)">([^]*?)$/);
+                    if (lastFileMatch && !lastFileMatch[0].includes('</file>')) {
+                      const filePath = lastFileMatch[1];
+                      const partialContent = lastFileMatch[2];
+                      
+                      if (!processedFiles.has(filePath)) {
+                        const fileExt = filePath.split('.').pop() || '';
+                        const fileType = fileExt === 'jsx' || fileExt === 'js' ? 'javascript' :
+                                        fileExt === 'css' ? 'css' :
+                                        fileExt === 'json' ? 'json' :
+                                        fileExt === 'html' ? 'html' : 'text';
+                        
+                        updatedState.currentFile = { 
+                          path: filePath, 
+                          content: partialContent, 
+                          type: fileType 
+                        };
+                        // Only show file status if not in edit mode
+                        if (!prev.isEdit) {
+                          updatedState.status = `Generating ${filePath}`;
+                        }
+                      }
+                    } else {
+                      updatedState.currentFile = undefined;
+                    }
+                    
+                    return updatedState;
+                  });
+                } else if (data.type === 'app') {
+                  setGenerationProgress(prev => ({ 
+                    ...prev, 
+                    status: 'Generated App.jsx structure'
+                  }));
+                } else if (data.type === 'component') {
+                  setGenerationProgress(prev => ({
+                    ...prev,
+                    status: `Generated ${data.name}`,
+                    components: [...prev.components, { 
+                      name: data.name, 
+                      path: data.path, 
+                      completed: true 
+                    }],
+                    currentComponent: data.index
+                  }));
+                } else if (data.type === 'package') {
+                  // Handle package installation from tool calls
+                  setGenerationProgress(prev => ({
+                    ...prev,
+                    status: data.message || `Installing ${data.name}`
+                  }));
+                } else if (data.type === 'complete') {
+                  generatedCode = data.generatedCode;
+                  explanation = data.explanation;
+                  
+                  // Save the last generated code
+                  setConversationContext(prev => ({
+                    ...prev,
+                    lastGeneratedCode: generatedCode
+                  }));
+                  
+                  // Clear thinking state when generation completes
+                  setGenerationProgress(prev => ({
+                    ...prev,
+                    isThinking: false,
+                    thinkingText: undefined,
+                    thinkingDuration: undefined
+                  }));
+                  
+                  // Store packages to install from tool calls
+                  if (data.packagesToInstall && data.packagesToInstall.length > 0) {
+                    console.log('[generate-code] Packages to install from tools:', data.packagesToInstall);
+                    // Store packages globally for later installation
+                    (window as any).pendingPackages = data.packagesToInstall;
+                  }
+                  
+                  // Parse all files from the completed code if not already done
+                  const fileRegex = /<file path="([^"]+)">([^]*?)<\/file>/g;
+                  const parsedFiles: Array<{path: string; content: string; type: string; completed: boolean}> = [];
+                  let fileMatch;
+                  
+                  while ((fileMatch = fileRegex.exec(data.generatedCode)) !== null) {
+                    const filePath = fileMatch[1];
+                    const fileContent = fileMatch[2];
+                    const fileExt = filePath.split('.').pop() || '';
+                    const fileType = fileExt === 'jsx' || fileExt === 'js' ? 'javascript' :
+                                    fileExt === 'css' ? 'css' :
+                                    fileExt === 'json' ? 'json' :
+                                    fileExt === 'html' ? 'html' : 'text';
+                    
+                    parsedFiles.push({
+                      path: filePath,
+                      content: fileContent.trim(),
+                      type: fileType,
+                      completed: true
+                    });
+                  }
+                  
+                  setGenerationProgress(prev => ({
+                    ...prev,
+                    status: `Generated ${parsedFiles.length > 0 ? parsedFiles.length : prev.files.length} file${(parsedFiles.length > 0 ? parsedFiles.length : prev.files.length) !== 1 ? 's' : ''}!`,
+                    isGenerating: false,
+                    isStreaming: false,
+                    isEdit: prev.isEdit,
+                    // Keep the files that were already parsed during streaming
+                    files: prev.files.length > 0 ? prev.files : parsedFiles
+                  }));
+                } else if (data.type === 'error') {
+                  throw new Error(data.error);
+                }
+              } catch (e) {
+                console.error('Failed to parse SSE data:', e);
+              }
+            }
+          }
+        }
+        
+        if (generatedCode) {
+          // Parse files from generated code for metadata
+          const fileRegex = /<file path="([^"]+)">([^]*?)<\/file>/g;
+          const generatedFiles = [];
+          let match;
+          while ((match = fileRegex.exec(generatedCode)) !== null) {
+            generatedFiles.push(match[1]);
+          }
+          
+          // Show appropriate message based on edit mode
+          if (isEdit && generatedFiles.length > 0) {
+            // For edits, show which file(s) were edited
+            const editedFileNames = generatedFiles.map(f => f.split('/').pop()).join(', ');
+            addChatMessage(
+              explanation || `Updated ${editedFileNames}`,
+              'ai',
+              {
+                appliedFiles: [generatedFiles[0]] // Only show the first edited file
+              }
+            );
+          } else {
+            // For new generation, show all files
+            addChatMessage(explanation || 'Code generated!', 'ai', {
+              appliedFiles: generatedFiles
+            });
+          }
+          
+          setPromptInput(generatedCode);
+          // Don't show the Generated Code panel by default
+          // setLeftPanelVisible(true);
+          
+          // Wait for sandbox creation if it's still in progress
+          if (sandboxPromise) {
+            addChatMessage('Waiting for sandbox to be ready...', 'system');
+            try {
+              await sandboxPromise;
+              // Remove the waiting message
+              setChatMessages(prev => prev.filter(msg => msg.content !== 'Waiting for sandbox to be ready...'));
+            } catch {
+              addChatMessage('Sandbox creation failed. Cannot apply code.', 'system');
+              return;
+            }
+          }
+          
+          if (sandboxData && generatedCode) {
+            // Use isEdit flag that was determined at the start
+            await applyGeneratedCode(generatedCode, isEdit);
+          }
+        }
+        
+        // Show completion status briefly then switch to preview
+        setGenerationProgress(prev => ({
+          ...prev,
+          isGenerating: false,
+          isStreaming: false,
+          status: 'Generation complete!',
+          isEdit: prev.isEdit,
+          // Clear thinking state on completion
+          isThinking: false,
+          thinkingText: undefined,
+          thinkingDuration: undefined
+        }));
+        
+        setTimeout(() => {
+          // Switch to preview but keep files for display
+          setActiveTab('preview');
+        }, 1000); // Reduced from 3000ms to 1000ms
+        
+        // Clear loading stage after completion
+        setLoadingStage(null);
+        
+      } catch (error: any) {
+        console.error('[home-screen] Error during clone process:', error);
+        addChatMessage(`Failed to clone website: ${error.message}`, 'system');
+        setUrlStatus([]);
+        setIsPreparingDesign(false);
+        // Clear all states on error
+        setUrlScreenshot(null);
+        setTargetUrl('');
+        setScreenshotError(null);
+        setLoadingStage(null);
+        setGenerationProgress(prev => ({
+          ...prev,
+          isGenerating: false,
+          isStreaming: false,
+          status: '',
+          // Keep files to display in sidebar
+          files: prev.files
+        }));
+        setActiveTab('preview');
+      }
+    }, 500);
+  };
 
-export const metadata = {
-  title: "Clone any website with one URL • SiteCloner AI",
-  description: "Paste a URL, get production-ready React/Next.js code in seconds. No lock-in, fully editable, and mobile-first.",
-  keywords: "website cloner, AI, React, Next.js, web development, code generation",
-  openGraph: {
-    title: "Clone any website with one URL • SiteCloner AI",
-    description: "Paste a URL, get production-ready React/Next.js code in seconds. No lock-in, fully editable, and mobile-first.",
-    type: "website",
-    locale: "en_US",
-  },
-  twitter: {
-    card: "summary_large_image",
-    title: "Clone any website with one URL • SiteCloner AI",
-    description: "Paste a URL, get production-ready React/Next.js code in seconds. No lock-in, fully editable, and mobile-first.",
-  },
-};
-
-export default function HomePage() {
   return (
-    <div className="min-h-screen bg-white">
-      <Header />
-      <main>
-        <HeroSection />
-        <Benefits />
-        <Features />
-        <Testimonials />
-        <Pricing />
-      </main>
-      <Footer />
+    <div className="h-screen flex flex-col bg-gray-50">
+      {/* Home Screen Overlay */}
+      <AnimatePresence>
+        {showHomeScreen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: homeScreenFading ? 0 : 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.5 }}
+            className="fixed inset-0 bg-gradient-to-br from-gray-900 via-gray-800 to-black z-50 flex items-center justify-center"
+          >
+            <div className="max-w-2xl mx-auto px-8 text-center">
+              <motion.div
+                initial={{ y: 20, opacity: 0 }}
+                animate={{ y: 0, opacity: 1 }}
+                transition={{ delay: 0.2, duration: 0.8 }}
+              >
+                <h1 className="text-5xl font-bold text-white mb-4">
+                  Clone any website with AI
+                </h1>
+                <p className="text-xl text-gray-300 mb-8">
+                  Paste a URL and get a fully functional React app in seconds
+                </p>
+                
+                <form onSubmit={handleHomeScreenSubmit} className="space-y-4">
+                  <div className="relative">
+                    <input
+                      type="text"
+                      value={homeUrlInput}
+                      onChange={(e) => setHomeUrlInput(e.target.value)}
+                      placeholder="Enter website URL (e.g., stripe.com)"
+                      className="w-full px-6 py-4 text-lg rounded-xl bg-white/10 backdrop-blur-sm border border-white/20 text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                      autoFocus
+                    />
+                  </div>
+                  
+                  <div className="relative">
+                    <textarea
+                      value={homeContextInput}
+                      onChange={(e) => setHomeContextInput(e.target.value)}
+                      placeholder="Optional: Add context or requirements (e.g., 'Make it dark themed', 'Add a contact form', 'Use green colors')"
+                      className="w-full px-6 py-4 text-lg rounded-xl bg-white/10 backdrop-blur-sm border border-white/20 text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none"
+                      rows={3}
+                    />
+                  </div>
+                  
+                  <button
+                    type="submit"
+                    disabled={!homeUrlInput.trim()}
+                    className="w-full px-8 py-4 text-lg font-semibold text-white bg-gradient-to-r from-blue-600 to-purple-600 rounded-xl hover:from-blue-700 hover:to-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 transform hover:scale-105"
+                  >
+                    Clone Website
+                  </button>
+                </form>
+                
+                <p className="text-sm text-gray-400 mt-6">
+                  Press Escape to skip and start with a blank sandbox
+                </p>
+              </motion.div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* URL Clone Overlay */}
+      <AnimatePresence>
+        {urlOverlayVisible && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/50 backdrop-blur-sm z-40 flex items-center justify-center"
+            onClick={() => setUrlOverlayVisible(false)}
+          >
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="bg-white rounded-2xl p-8 max-w-md w-full mx-4 shadow-2xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <h2 className="text-2xl font-bold text-gray-900 mb-4">Clone Website</h2>
+              <p className="text-gray-600 mb-6">Enter a website URL to recreate it as a React app</p>
+              
+              <div className="space-y-4">
+                <input
+                  type="text"
+                  value={urlInput}
+                  onChange={(e) => setUrlInput(e.target.value)}
+                  placeholder="https://example.com"
+                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  autoFocus
+                />
+                
+                <div className="flex gap-3">
+                  <button
+                    onClick={cloneWebsite}
+                    disabled={!urlInput.trim()}
+                    className="flex-1 px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  >
+                    Clone
+                  </button>
+                  <button
+                    onClick={() => setUrlOverlayVisible(false)}
+                    className="px-6 py-3 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
+                  >
+                    Cancel
+                  </button>
+                </div>
+                
+                {urlStatus.length > 0 && (
+                  <div className="mt-4 p-3 bg-blue-50 rounded-lg">
+                    {urlStatus.map((status, idx) => (
+                      <p key={idx} className="text-sm text-blue-700">{status}</p>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Loading Background */}
+      <AnimatePresence>
+        {showLoadingBackground && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-gradient-to-br from-blue-900 via-purple-900 to-indigo-900 z-30"
+          />
+        )}
+      </AnimatePresence>
+
+      {/* Header */}
+      <div className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between flex-shrink-0">
+        <div className="flex items-center gap-4">
+          <h1 className="text-xl font-semibold text-gray-900">AI Sandbox</h1>
+          <div className="flex items-center gap-2">
+            <div className={`w-2 h-2 rounded-full ${status.active ? 'bg-green-500' : 'bg-red-500'}`} />
+            <span className="text-sm text-gray-600">{status.text}</span>
+          </div>
+        </div>
+        
+        <div className="flex items-center gap-3">
+          {/* Tab Switcher */}
+          <div className="flex bg-gray-100 rounded-lg p-1">
+            <button
+              onClick={() => setActiveTab('preview')}
+              className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${
+                activeTab === 'preview'
+                  ? 'bg-white text-gray-900 shadow-sm'
+                  : 'text-gray-600 hover:text-gray-900'
+              }`}
+            >
+              Preview
+            </button>
+            <button
+              onClick={() => setActiveTab('generation')}
+              className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${
+                activeTab === 'generation'
+                  ? 'bg-white text-gray-900 shadow-sm'
+                  : 'text-gray-600 hover:text-gray-900'
+              }`}
+            >
+              Generation
+            </button>
+          </div>
+          
+          <Button
+            onClick={() => setUrlOverlayVisible(true)}
+            variant="outline"
+            size="sm"
+            className="flex items-center gap-2"
+          >
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+            </svg>
+            Clone URL
+          </Button>
+          
+          <Button
+            onClick={downloadZip}
+            variant="outline"
+            size="sm"
+            disabled={!sandboxData || loading}
+            className="flex items-center gap-2"
+          >
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+            </svg>
+            Download
+          </Button>
+        </div>
+      </div>
+
+      {/* Main Content */}
+      <div className="flex-1 flex overflow-hidden">
+        {/* Left Panel - Chat */}
+        <div className="w-96 bg-white border-r border-gray-200 flex flex-col">
+          {/* Chat Header */}
+          <div className="p-4 border-b border-gray-200 flex items-center justify-between">
+            <h2 className="font-semibold text-gray-900">AI Assistant</h2>
+            <div className="flex items-center gap-2">
+              <select
+                value={aiModel}
+                onChange={(e) => setAiModel(e.target.value)}
+                className="text-xs border border-gray-300 rounded px-2 py-1"
+              >
+                {appConfig.ai.availableModels.map(model => (
+                  <option key={model} value={model}>{model}</option>
+                ))}
+              </select>
+              <button
+                onClick={clearChatHistory}
+                className="text-gray-500 hover:text-gray-700 p-1"
+                title="Clear chat"
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          {/* Chat Messages */}
+          <div className="flex-1 overflow-y-auto p-4 space-y-4" ref={chatMessagesRef}>
+            {chatMessages.map((message, idx) => (
+              <div key={idx} className={`flex ${message.type === 'user' ? 'justify-end' : 'justify-start'}`}>
+                <div className={`max-w-[85%] rounded-lg px-3 py-2 ${
+                  message.type === 'user' 
+                    ? 'bg-blue-600 text-white' 
+                    : message.type === 'system'
+                    ? 'bg-gray-100 text-gray-800'
+                    : message.type === 'error'
+                    ? 'bg-red-100 text-red-800'
+                    : message.type === 'command'
+                    ? `${
+                        message.metadata?.commandType === 'error' ? 'bg-red-50 text-red-700 border border-red-200' :
+                        message.metadata?.commandType === 'input' ? 'bg-blue-50 text-blue-700 border border-blue-200' :
+                        'bg-gray-50 text-gray-700 border border-gray-200'
+                      } font-mono text-sm`
+                    : 'bg-green-100 text-green-800'
+                }`}>
+                  <div className="whitespace-pre-wrap text-sm">
+                    {message.content}
+                  </div>
+                  {message.metadata?.appliedFiles && message.metadata.appliedFiles.length > 0 && (
+                    <div className="mt-2 pt-2 border-t border-current/20">
+                      <div className="text-xs opacity-75 mb-1">Files:</div>
+                      {message.metadata.appliedFiles.map((file, fileIdx) => (
+                        <div key={fileIdx} className="text-xs opacity-90 font-mono">
+                          {file}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <div className="text-xs opacity-50 mt-1">
+                    {message.timestamp.toLocaleTimeString()}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* Chat Input */}
+          <div className="p-4 border-t border-gray-200">
+            <div className="flex gap-2">
+              <Textarea
+                value={aiChatInput}
+                onChange={(e) => setAiChatInput(e.target.value)}
+                placeholder="Ask me to create components, modify code, or clone a website..."
+                className="flex-1 min-h-[80px] resize-none"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    sendChatMessage();
+                  }
+                }}
+              />
+              <Button
+                onClick={sendChatMessage}
+                disabled={!aiChatInput.trim() || !aiEnabled}
+                size="sm"
+                className="self-end"
+              >
+                Send
+              </Button>
+            </div>
+          </div>
+        </div>
+
+        {/* Right Panel - Main Content */}
+        <div className="flex-1 relative">
+          {/* Code Application Progress Overlay */}
+          <AnimatePresence>
+            {codeApplicationState.stage && (
+              <CodeApplicationProgress state={codeApplicationState} />
+            )}
+          </AnimatePresence>
+          
+          {renderMainContent()}
+        </div>
+      </div>
     </div>
   );
 }
