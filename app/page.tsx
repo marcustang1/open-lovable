@@ -905,7 +905,11 @@ Tip: I automatically detect and install npm packages from your code imports (lik
       if (response.ok) {
         const data = await response.json();
         if (data.success) {
-          setSandboxFiles(data.files || {});
+        if (data.instructions) {
+          throw new Error(`${data.error}\n\nInstructions: ${data.instructions}`);
+        } else {
+          throw new Error(data.error || 'Failed to create sandbox');
+        }
           setFileStructure(data.structure || '');
           console.log('[fetchSandboxFiles] Updated file list:', Object.keys(data.files || {}).length, 'files');
         }
