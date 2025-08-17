@@ -1,8 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createGroq } from '@ai-sdk/groq';
-import { createAnthropic } from '@ai-sdk/anthropic';
-import { createOpenAI } from '@ai-sdk/openai';
-import { createGoogleGenerativeAI } from '@ai-sdk/google';
+import OpenAI from 'openai';
 import { streamText } from 'ai';
 import type { SandboxState } from '@/types/sandbox';
 import { selectFilesForEdit, getFileContents, formatFilesForAI } from '@/lib/context-selector';
@@ -11,21 +8,14 @@ import { FileManifest } from '@/types/file-manifest';
 import type { ConversationState, ConversationMessage, ConversationEdit } from '@/types/conversation';
 import { appConfig } from '@/config/app.config';
 
-const groq = createGroq({
-  apiKey: process.env.GROQ_API_KEY,
-});
-
-const anthropic = createAnthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY,
-  baseURL: process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com/v1',
-});
-
-const googleGenerativeAI = createGoogleGenerativeAI({
-  apiKey: process.env.GEMINI_API_KEY,
-});
-
-const openai = createOpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
+// Initialize OpenRouter client
+const openrouter = new OpenAI({
+  baseURL: "https://openrouter.ai/api/v1",
+  apiKey: process.env.OPENROUTER_API_KEY,
+  defaultHeaders: {
+    "HTTP-Referer": process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000",
+    "X-Title": process.env.NEXT_PUBLIC_SITE_NAME || "SiteCloner AI",
+  },
 });
 
 // Helper function to analyze user preferences from conversation history
@@ -74,7 +64,7 @@ declare global {
 
 export async function POST(request: NextRequest) {
   try {
-    const { prompt, model = 'openai/gpt-oss-20b', context, isEdit = false } = await request.json();
+    const { prompt, model = 'google/gemini-2.5-flash', context, isEdit = false } = await request.json();
     
     console.log('[generate-ai-code-stream] Received request:');
     console.log('[generate-ai-code-stream] - prompt:', prompt);
@@ -1151,59 +1141,19 @@ CRITICAL: When files are provided in the context:
         // Track packages that need to be installed
         const packagesToInstall: string[] = [];
         
-        // Determine which provider to use based on model
-        const isAnthropic = model.startsWith('anthropic/');
-        const isGoogle = model.startsWith('google/');
-        const isOpenAI = model.startsWith('openai/gpt-5');
-        const modelProvider = isAnthropic ? anthropic : (isOpenAI ? openai : (isGoogle ? googleGenerativeAI : groq));
-        const actualModel = isAnthropic ? model.replace('anthropic/', '') : 
-                           (model === 'openai/gpt-5') ? 'gpt-5' :
-                           (isGoogle ? model.replace('google/', '') : model);
-
-        // Make streaming API call with appropriate provider
-        const streamOptions: any = {
-          model: modelProvider(actualModel),
+        console.log('[generate-ai-code-stream] Using AI model:', model);
+        console.log('[generate-ai-code-stream] Is edit mode:', isEdit);
+        
+        // Generate AI response using streaming
+        const stream = await openrouter.chat.completions.create({
+          model: model,
           messages: [
-            { 
-              role: 'system', 
-              content: systemPrompt + `
-
-🚨 CRITICAL CODE GENERATION RULES - VIOLATION = FAILURE 🚨:
-1. NEVER truncate ANY code - ALWAYS write COMPLETE files
-2. NEVER use "..." anywhere in your code - this causes syntax errors
-3. NEVER cut off strings mid-sentence - COMPLETE every string
-4. NEVER leave incomplete class names or attributes
-5. ALWAYS close ALL tags, quotes, brackets, and parentheses
-6. If you run out of space, prioritize completing the current file
-
-CRITICAL STRING RULES TO PREVENT SYNTAX ERRORS:
-- NEVER write: className="px-8 py-4 bg-black text-white font-bold neobrut-border neobr...
-- ALWAYS write: className="px-8 py-4 bg-black text-white font-bold neobrut-border neobrut-shadow"
-- COMPLETE every className attribute
-- COMPLETE every string literal
-- NO ellipsis (...) ANYWHERE in code
-
-PACKAGE RULES:
-- For INITIAL generation: Use ONLY React, no external packages
-- For EDITS: You may use packages, specify them with <package> tags
-- NEVER install packages like @mendable/firecrawl-js unless explicitly requested
-
-Examples of SYNTAX ERRORS (NEVER DO THIS):
-❌ className="px-4 py-2 bg-blue-600 hover:bg-blue-7...
-❌ <button className="btn btn-primary btn-...
-❌ const title = "Welcome to our...
-❌ import { useState, useEffect, ... } from 'react'
-
-Examples of CORRECT CODE (ALWAYS DO THIS):
-✅ className="px-4 py-2 bg-blue-600 hover:bg-blue-700"
-✅ <button className="btn btn-primary btn-large">
-✅ const title = "Welcome to our application"
-✅ import { useState, useEffect, useCallback } from 'react'
-
-REMEMBER: It's better to generate fewer COMPLETE files than many INCOMPLETE files.`
+            {
+              role: 'system',
+              content: systemPrompt
             },
-            { 
-              role: 'user', 
+            {
+              role: 'user',
               content: fullPrompt + `
 
 CRITICAL: You MUST complete EVERY file you start. If you write:
@@ -1223,27 +1173,10 @@ If you're running out of space, generate FEWER files but make them COMPLETE.
 It's better to have 3 complete files than 10 incomplete files.`
             }
           ],
-          maxTokens: 8192, // Reduce to ensure completion
-          stopSequences: [] // Don't stop early
-          // Note: Neither Groq nor Anthropic models support tool/function calling in this context
-          // We use XML tags for package detection instead
-        };
-        
-        // Add temperature for non-reasoning models
-        if (!model.startsWith('openai/gpt-5')) {
-          streamOptions.temperature = 0.7;
-        }
-        
-        // Add reasoning effort for GPT-5 models
-        if (isOpenAI) {
-          streamOptions.experimental_providerMetadata = {
-            openai: {
-              reasoningEffort: 'high'
-            }
-          };
-        }
-        
-        const result = await streamText(streamOptions);
+          temperature: 0.7,
+          max_tokens: 8000,
+          stream: true,
+        });
         
         // Stream the response and parse in real-time
         let generatedCode = '';
@@ -1258,8 +1191,10 @@ It's better to have 3 complete files than 10 incomplete files.`
         let tagBuffer = '';
         
         // Stream the response and parse for packages in real-time
-        for await (const textPart of result.textStream) {
-          const text = textPart || '';
+        for await (const chunk of stream) {
+          const text = chunk.choices[0]?.delta?.content || '';
+          if (!text) continue;
+          
           generatedCode += text;
           currentFile += text;
           
@@ -1584,18 +1519,8 @@ Original request: ${prompt}
 Provide the complete file content without any truncation. Include all necessary imports, complete all functions, and close all tags properly.`;
                 
                 // Make a focused API call to complete this specific file
-                // Create a new client for the completion based on the provider
-                let completionClient;
-                if (model.includes('gpt') || model.includes('openai')) {
-                  completionClient = openai;
-                } else if (model.includes('claude')) {
-                  completionClient = anthropic;
-                } else {
-                  completionClient = groq;
-                }
-                
-                const completionResult = await streamText({
-                  model: completionClient(modelMapping[model] || model),
+                const completionResult = await openrouter.chat.completions.create({
+                  model: model,
                   messages: [
                     { 
                       role: 'system', 
@@ -1603,15 +1528,13 @@ Provide the complete file content without any truncation. Include all necessary 
                     },
                     { role: 'user', content: completionPrompt }
                   ],
-                  temperature: isGPT5 ? undefined : appConfig.ai.defaultTemperature,
-                  maxTokens: appConfig.ai.truncationRecoveryMaxTokens
+                  temperature: 0.7,
+                  max_tokens: 4000,
+                  stream: false
                 });
                 
-                // Get the full text from the stream
-                let completedContent = '';
-                for await (const chunk of completionResult.textStream) {
-                  completedContent += chunk;
-                }
+                // Get the full text from the response
+                const completedContent = completionResult.choices[0]?.message?.content || '';
                 
                 // Replace the truncated file in the generatedCode
                 const filePattern = new RegExp(

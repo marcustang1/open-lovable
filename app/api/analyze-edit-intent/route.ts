@@ -1,24 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createGroq } from '@ai-sdk/groq';
-import { createAnthropic } from '@ai-sdk/anthropic';
-import { createOpenAI } from '@ai-sdk/openai';
-import { createGoogleGenerativeAI } from '@ai-sdk/google';
-import { generateObject } from 'ai';
+import OpenAI from 'openai';
 import { z } from 'zod';
 import type { FileManifest } from '@/types/file-manifest';
 
-const groq = createGroq({
-  apiKey: process.env.GROQ_API_KEY,
-});
-
-const anthropic = createAnthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY,
-  baseURL: process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com/v1',
-});
-
-const openai = createOpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-  baseURL: process.env.OPENAI_BASE_URL,
+// Initialize OpenRouter client
+const openrouter = new OpenAI({
+  baseURL: "https://openrouter.ai/api/v1",
+  apiKey: process.env.OPENROUTER_API_KEY,
+  defaultHeaders: {
+    "HTTP-Referer": process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000",
+    "X-Title": process.env.NEXT_PUBLIC_SITE_NAME || "SiteCloner AI",
+  },
 });
 
 // Schema for the AI's search plan - not file selection!
@@ -51,7 +43,7 @@ const searchPlanSchema = z.object({
 
 export async function POST(request: NextRequest) {
   try {
-    const { prompt, manifest, model = 'openai/gpt-oss-20b' } = await request.json();
+    const { prompt, manifest, model = 'google/gemini-2.5-flash' } = await request.json();
     
     console.log('[analyze-edit-intent] Request received');
     console.log('[analyze-edit-intent] Prompt:', prompt);
@@ -93,29 +85,11 @@ export async function POST(request: NextRequest) {
     console.log('[analyze-edit-intent] Analyzing prompt:', prompt);
     console.log('[analyze-edit-intent] File summary preview:', fileSummary.split('\n').slice(0, 5).join('\n'));
     
-    // Select the appropriate AI model based on the request
-    let aiModel;
-    if (model.startsWith('anthropic/')) {
-      aiModel = anthropic(model.replace('anthropic/', ''));
-    } else if (model.startsWith('openai/')) {
-      if (model.includes('gpt-oss')) {
-        aiModel = groq(model);
-      } else {
-        aiModel = openai(model.replace('openai/', ''));
-      }
-    } else if (model.startsWith('google/')) {
-      aiModel = createGoogleGenerativeAI(model.replace('google/', ''));
-    } else {
-      // Default to groq if model format is unclear
-      aiModel = groq(model);
-    }
-    
     console.log('[analyze-edit-intent] Using AI model:', model);
     
-    // Use AI to create a search plan
-    const result = await generateObject({
-      model: aiModel,
-      schema: searchPlanSchema,
+    // Use OpenRouter to create a search plan
+    const completion = await openrouter.chat.completions.create({
+      model: model,
       messages: [
         {
           role: 'system',
@@ -155,19 +129,52 @@ ${fileSummary}`
 Create a search plan to find the exact code that needs to be modified. Include specific search terms and patterns.`
         }
       ]
+      ],
+      temperature: 0.3,
+      max_tokens: 1000,
     });
     
+    // Parse the response to extract search plan
+    const responseText = completion.choices[0]?.message?.content || '';
+    let searchPlan;
+    
+    try {
+      // Try to parse JSON from the response
+      const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        searchPlan = JSON.parse(jsonMatch[0]);
+      } else {
+        // Fallback: create a basic search plan
+        searchPlan = {
+          editType: 'UPDATE_COMPONENT',
+          reasoning: 'Basic search plan generated',
+          searchTerms: [prompt.toLowerCase()],
+          fileTypesToSearch: ['.jsx', '.tsx', '.js', '.ts'],
+          expectedMatches: 1
+        };
+      }
+    } catch (parseError) {
+      console.error('[analyze-edit-intent] Failed to parse search plan:', parseError);
+      searchPlan = {
+        editType: 'UPDATE_COMPONENT',
+        reasoning: 'Fallback search plan',
+        searchTerms: [prompt.toLowerCase()],
+        fileTypesToSearch: ['.jsx', '.tsx', '.js', '.ts'],
+        expectedMatches: 1
+      };
+    }
+    
     console.log('[analyze-edit-intent] Search plan created:', {
-      editType: result.object.editType,
-      searchTerms: result.object.searchTerms,
-      patterns: result.object.regexPatterns?.length || 0,
-      reasoning: result.object.reasoning
+      editType: searchPlan.editType,
+      searchTerms: searchPlan.searchTerms,
+      patterns: searchPlan.regexPatterns?.length || 0,
+      reasoning: searchPlan.reasoning
     });
     
     // Return the search plan, not file matches
     return NextResponse.json({
       success: true,
-      searchPlan: result.object
+      searchPlan: searchPlan
     });
     
   } catch (error) {
