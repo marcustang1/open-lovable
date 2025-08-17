@@ -128,7 +128,6 @@ ${fileSummary}`
 
 Create a search plan to find the exact code that needs to be modified. Include specific search terms and patterns.`
         }
-      ]
       ],
       temperature: 0.3,
       max_tokens: 1000,
